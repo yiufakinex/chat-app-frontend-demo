@@ -1,0 +1,45 @@
+@import 'tailwindcss/base';
+@import 'tailwindcss/components';
+@import 'tailwindcss/utilities';
+
+
+.custom-bg-gray {
+    background-color: #6b7280;
+}
+
+#LeftPanel {
+    width: 30%;
+    max-height: 85vh !important;
+}
+
+#RightPanel {
+    width: 60%;
+    background: #161717;
+    max-height: 85vh !important;
+}
+
+@media(max-width: 850px) {
+    #root {
+        height: 100%;
+    }
+
+    #LeftPanel {
+        width: 90%;
+        height: 400px;
+    }
+
+    #RightPanel {
+        width: 90%;
+        height: 500px;
+    }
+}
+
+@media(max-width: 600px) {
+    #LeftPanel {
+        width: 95%;
+    }
+
+    #RightPanel {
+        width: 95%;
+    }
+}
