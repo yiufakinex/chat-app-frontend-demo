@@ -9,7 +9,7 @@
 
 ## About
 
-This is a relatively simple chat application created using React/TypeScript in the frontend.
+This is a relatively simple chat application created using React/TypeScript in the frontend. Users can create accounts via OAuth 2.0, and form custom group chats.
 
 ## Demo
 
