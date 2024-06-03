@@ -1,10 +1,12 @@
 import React, { useEffect, useRef, useState } from 'react';
 import "../css/global.css";
 import { GroupChat } from '../types/GroupChat';
+import SockJS from 'sockjs-client';
+import Stomp, { Client, Subscription } from 'stompjs';
 import { Message } from '../types/Message';
 import MessageView from './MessageView';
 import InfiniteScroll from 'react-infinite-scroll-component';
-import axios from 'axios';
+import axios, { AxiosError, AxiosResponse } from 'axios';
 import { checkError, checkRedirect } from '../App';
 import UsersView from './UsersView';
 import { User } from '../types/User';
@@ -24,9 +26,15 @@ const Chat: React.FC<ChatProp> = (props: ChatProp) => {
 
     const [chatSettingsMenu, setChatSettingsMenu] = useState<boolean>(false);
 
+    const stompClient = useRef<Client>(null);
+
+    const stompSubscription = useRef<Subscription>(null);
+
+    const stompErrorSubscription = useRef<Subscription>(null);
+
     const [errorMessage, setErrorMessage] = useState<string>('');
 
-    const [newMessages] = useState<Message[]>([]);
+    const [newMessages, setNewMessages] = useState<Message[]>([]);
 
     const [oldMessages, setOldMessages] = useState<Message[]>([]);
 
@@ -46,14 +54,68 @@ const Chat: React.FC<ChatProp> = (props: ChatProp) => {
 
     const [lastMessageSent, setLastMessageSent] = useState<number>(0);
 
+    useEffect(() => {
+        stompClient.current = Stomp.over(new SockJS("/ws"));
+        const client: Client = stompClient.current;
+        client.connect({}, onConnected, onError);
+        return () => {
+            if (stompSubscription.current) {
+                stompSubscription.current.unsubscribe();
+            }
+            if (stompErrorSubscription.current) {
+                stompErrorSubscription.current.unsubscribe();
+            }
+            if (client.connected) {
+                client.disconnect(() => { }, {});
+            }
+        }
+    }, []);
+
+    const onConnected = () => {
+        const client: Client = stompClient.current;
+        stompSubscription.current = client.subscribe(`/topic/groupchat/${groupChat.id}`, onMessageReceived);
+        stompErrorSubscription.current = client.subscribe(`/user/topic/errors`, onErrorReceived);
+        subscriptionStart.current = Date.now();
+        loadMessages();
+    }
+
+    const onError = () => {
+        alert("Error in connecting to web socket, try again. Please contact me if this persists.");
+        loadMessages();
+    }
+
+    const onMessageReceived = async (res: Stomp.Message) => {
+        const message: Message = JSON.parse(res.body);
+        if (['USER_JOIN', 'USER_LEAVE', 'USER_RENAME'].includes(message.messageType)) {
+            props.refreshChats(true);
+        }
+        setNewMessages(newMessages => [...newMessages, message]);
+    }
+
+    const onErrorReceived = (res: Stomp.Message) => {
+        setErrorMessage(res.body);
+        setTimeout(() => { setErrorMessage('') }, 3000);
+    }
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
     }
 
-    useEffect(() => {
-        loadMessages();
-    }, []);
+    const sendMessage = () => {
+        const curr: number = Date.now();
+        const client: Client = stompClient.current;
+        if (curr - lastMessageSent < 500) {
+            setErrorMessage("Please wait 500ms before sending another message.");
+            setTimeout(() => { setErrorMessage('') }, 500);
+        } else {
+            const message = {
+                content: messageRef.current.value
+            };
+            client.send(`/app/send/${groupChat.id}`, {}, JSON.stringify(message));
+            messageRef.current.value = "";
+            setLastMessageSent(curr);
+        }
+    }
 
     const loadMessages = () => {
         axios
@@ -64,7 +126,7 @@ const Chat: React.FC<ChatProp> = (props: ChatProp) => {
                     before: subscriptionStart.current
                 }
             })
-            .then((res) => {
+            .then((res: AxiosResponse) => {
                 checkRedirect(res);
                 const data = res.data;
                 const messages: Message[] = data.content;
@@ -72,33 +134,10 @@ const Chat: React.FC<ChatProp> = (props: ChatProp) => {
                 setOldMessages(oldMessages => [...oldMessages, ...messages]);
                 setHasMore(data.hasNext);
             })
-            .catch((error) => {
-                checkError(error);
-            });
-    };
-
-    const sendMessage = () => {
-        const curr: number = Date.now();
-        if (curr - lastMessageSent < 500) {
-            setErrorMessage("Please wait 500ms before sending another message.");
-            setTimeout(() => { setErrorMessage(''); }, 500);
-        } else {
-            const message = {
-                content: messageRef.current.value
-            };
-            axios
-                .post(`/api/message/${groupChat.id}/send`, message)
-                .then(() => {
-
-                    messageRef.current.value = "";
-                    setLastMessageSent(curr);
-                })
-                .catch((error) => {
-
-                    checkError(error);
-                });
-        }
-    };
+            .catch((e: AxiosError) => {
+                checkError(e);
+            })
+    }
 
     const searchUser = () => {
         const username = searchRef.current.value;
@@ -106,7 +145,7 @@ const Chat: React.FC<ChatProp> = (props: ChatProp) => {
             .get("/api/users/search", {
                 params: { username: username }
             })
-            .then((res) => {
+            .then((res: AxiosResponse) => {
                 checkRedirect(res);
                 const data = res.data;
                 const user: User = data.user;
@@ -118,56 +157,35 @@ const Chat: React.FC<ChatProp> = (props: ChatProp) => {
                     setNotFoundUsername('');
                 }
             })
-            .catch((error) => {
-
-                checkError(error);
-            });
-    };
+            .catch((e: AxiosError) => {
+                checkError(e);
+            })
+    }
 
     const renameChat = () => {
+        const client: Client = stompClient.current;
         const form = {
             name: renameRef.current.value
         };
-        axios
-            .post(`/api/groupchat/${groupChat.id}/rename`, form)
-            .then(() => {
-
-                renameRef.current.value = "";
-            })
-            .catch((error) => {
-
-                checkError(error);
-            });
-    };
+        client.send(`/app/update/${groupChat.id}/rename`, {}, JSON.stringify(form));
+        renameRef.current.value = "";
+    }
 
     const addUser = () => {
+        const client: Client = stompClient.current;
         const form = {
             username: searchedUser.username
         };
-        axios
-            .post(`/api/groupchat/${groupChat.id}/users/add`, form)
-            .then(() => {
-
-                searchRef.current.value = "";
-                setSearchedUser(null);
-            })
-            .catch((error) => {
-
-                checkError(error);
-            });
-    };
+        client.send(`/app/update/${groupChat.id}/users/add`, {}, JSON.stringify(form));
+        searchRef.current.value = "";
+        setSearchedUser(null);
+    }
 
     const leaveChat = () => {
-        axios
-            .post(`/api/groupchat/${groupChat.id}/leave`)
-            .then(() => {
+        const client: Client = stompClient.current;
+        client.send(`/app/update/${groupChat.id}/users/remove`, {}, "");
+    }
 
-            })
-            .catch((error) => {
-
-                checkError(error);
-            });
-    };
 
     return (
         <>
